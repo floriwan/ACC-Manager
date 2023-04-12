@@ -9,6 +9,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using static RaceElement.ACCSharedMemory;
+using System;
 
 namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
 {
@@ -40,18 +41,23 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
 
         private SolidBrush _whiteBrush = new SolidBrush(Color.White);
         private SolidBrush _greenBrush = new SolidBrush(Color.Green);
+        private SolidBrush _redBrush = new SolidBrush(Color.Red);
 
         private const int windowWidth = 400;
-        private const int windowHeight = 100;
+        private const int windowHeight = 120;
         private const int padding = 10;
         private const int barYPos = 30;
         private const int progressBarHeight = 20;
         private const int pitBarHeight = 5;
         private const int amountOfLapsForAverageCalculation = 3;
 
-        private AcSessionType _lastSessionType = AcSessionType.AC_UNKNOWN;
+        private float _lastSessionTimeLeft = 0;
+        private bool _raceStarted = false;
+
         private float _sessionLength = 0;
         private float _pitWindowStartPercentage = 0;
+        private float _pitWindowStartTime = 0;
+        private int _pitWindowOpenInLaps = 0;
         private float _pitWindowEndPercentage = 0;
         private float _raceProgressWithFuelPercentage = 0;
         private float _refuelTimeWithMaxFuelPercentage = 0;
@@ -151,7 +157,7 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
             }
 
             // if text does not fit into the overlay, move text to the left
-            Font drawFont = FontUtil.FontOrbitron(10);
+            Font drawFont = FontUtil.FontConthrax(10);//.FontOrbitron(10);
             SizeF pitStopTextSize = g.MeasureString(pitStopInfo, drawFont);
             float textPosition = raceProgressWithFuelPx + 6;
             if ((textPosition + pitStopTextSize.Width) > widgetMaxXPos)
@@ -171,7 +177,7 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
             }
             else if (fuelDifference < -0.01)
             {
-                drawBrush = new SolidBrush(Color.Red);
+                drawBrush =_redBrush;
                 fuelConsumptionIndicator = "\u23F6";
             }
             else
@@ -180,18 +186,25 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
                 fuelConsumptionIndicator = "=";
             }
 
-            drawFont = FontUtil.FontOrbitron(15);
+            drawFont = FontUtil.FontConthrax(15);
             g.DrawString($"[{fuelConsumptionIndicator}] {fuelDifference.ToString("0.00")}l", drawFont, drawBrush, widgetMinXPos + 200, barYPos + pitBarHeight + 30, drawFormat);
 
             // refuel
-            drawFont = FontUtil.FontOrbitron(15);
+            drawFont = FontUtil.FontConthrax(15);
             g.DrawString($"Refuel:", drawFont, _whiteBrush, widgetMinXPos, barYPos + pitBarHeight + 30, drawFormat);
-            if (this._refuelToTheEnd <= 0) drawBrush = _greenBrush;
+            if (this._refuelToTheEnd <= 0) drawBrush = _redBrush;
             g.DrawString($"{this._refuelToTheEnd.ToString("0.0")}l ", drawFont, drawBrush, widgetMinXPos + 110, barYPos + pitBarHeight + 30, drawFormat);
 
-            drawFont = FontUtil.FontOrbitron(8);
+            drawFont = FontUtil.FontConthrax(8);
             g.DrawString($"{_config.RefuelInfoGrouping.ExtraLaps} extra laps", drawFont, _whiteBrush, widgetMinXPos, barYPos + pitBarHeight + 50, drawFormat);
 
+            // pit window open in laps
+            if (this._pitWindowOpenInLaps != 0)
+            {
+                drawFont = FontUtil.FontConthrax(8);
+                g.DrawString($"Pit open in {this._pitWindowOpenInLaps} laps", drawFont, _whiteBrush, widgetMinXPos, barYPos + pitBarHeight + 65, drawFormat);
+            }
+            
             g.TextRenderingHint = previousHint;
             g.SmoothingMode = previous;
         }
@@ -213,6 +226,16 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
             this._raceProgressWithFuelPercentage = ((averageLapTime * this._lapsWithFuel) * 100) / _sessionLength;
             this._raceProgressWithFuelPercentage += GetRaceProgressPercentage();
 
+            if (this._pitWindowStartPercentage > GetRaceProgressPercentage())
+            {
+                float timeUntilPitWIndowOpen = pageGraphics.SessionTimeLeft - this._pitWindowStartTime;
+                this._pitWindowOpenInLaps = (int)Math.Ceiling(timeUntilPitWIndowOpen / GetAverageLapTime());
+            }
+            else
+            {
+                this._pitWindowOpenInLaps = 0;
+            }
+            
 
             // the time where we will make it to the end with a full tank.
             float lapsWithMaxFuel = (int)(pageStatic.MaxFuel) / _lastFuelConsumption;
@@ -282,19 +305,21 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
 
         private void UpdateSessionData()
         {
-            if (_lastSessionType != pageGraphics.SessionType)
+            // no ongoing race
+            if ((pageGraphics.SessionType != AcSessionType.AC_RACE) && _raceStarted)
             {
-                // new session, reset
                 this._sessionLength = 0;
-                this._lastSessionType = pageGraphics.SessionType;
-                //return;
+                _raceStarted = false;
+                return;
             }
 
-            // new session started
-            if (this._sessionLength < pageGraphics.SessionTimeLeft)
+            // race is started
+            if ((pageGraphics.SessionType == AcSessionType.AC_RACE) 
+                && (this._lastSessionTimeLeft > pageGraphics.SessionTimeLeft)
+                && !_raceStarted)
             {
-                // we will not get the session length after race start, save the session length.            {
                 this._sessionLength = pageGraphics.SessionTimeLeft;
+                this._raceStarted = true;
 
                 // calculate pit window length
                 if (pageStatic.PitWindowStart <= 0 || pageStatic.PitWindowStart >= pageStatic.PitWindowEnd || pageGraphics.SessionType != AcSessionType.AC_RACE)
@@ -305,14 +330,14 @@ namespace RaceElement.HUD.ACC.Overlays.OverlayRefuel
                 else
                 {
                     int pitWindowLength = pageStatic.PitWindowEnd - pageStatic.PitWindowStart;
-                    float pitWindowStartTime = (this._sessionLength - pitWindowLength) / 2;
-                    float pitWindowEndTime = pitWindowStartTime + pitWindowLength;
-                    this._pitWindowStartPercentage = (pitWindowStartTime * 100) / this._sessionLength;
+                    this._pitWindowStartTime = (this._sessionLength - pitWindowLength) / 2;
+                    float pitWindowEndTime = this._pitWindowStartTime + pitWindowLength;
+                    this._pitWindowStartPercentage = (this._pitWindowStartTime * 100) / this._sessionLength;
                     this._pitWindowEndPercentage = (pitWindowEndTime * 100) / this._sessionLength;
-
                 }
-
             }
+
+            this._lastSessionTimeLeft = pageGraphics.SessionTimeLeft;
 
         }
 
